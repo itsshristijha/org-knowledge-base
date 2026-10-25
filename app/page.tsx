@@ -1,7 +1,12 @@
 import { Workspace } from "@/components/workspace";
-import { auth } from "@/auth";
+import { auth, signIn } from "@/auth";
 
 export const dynamic = "force-dynamic";
+
+async function signInWithGoogle() {
+  "use server";
+  await signIn("google");
+}
 
 function SetupPage() {
   return (
@@ -58,11 +63,13 @@ export default async function Home({ searchParams }: { searchParams: Promise<{ a
             <h2>Your knowledge, in context.</h2>
             <p className="muted">Sign in to open your private workspace.</p>
             {auth === "failed" && <p className="error-message">Google sign-in could not be completed. Please try again.</p>}
-            <a className="button button-google" href="/api/auth/signin/google">
-              <GoogleMark />
-              Continue with Google
-              <span aria-hidden="true">→</span>
-            </a>
+            <form action={signInWithGoogle}>
+              <button className="button button-google" type="submit">
+                <GoogleMark />
+                Continue with Google
+                <span aria-hidden="true">→</span>
+              </button>
+            </form>
             <p className="fine-print">Protected sign-in · Your documents are never public</p>
           </div>
         </section>
