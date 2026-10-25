@@ -193,9 +193,11 @@ a { color: inherit; text-decoration: none; }
 .profile-copy span { overflow: hidden; color: #8a938b; font-size: 9px; text-overflow: ellipsis; }
 .icon-button { width: 31px; height: 31px; display: grid; place-items: center; border: 0; border-radius: 8px; color: #77827a; background: transparent; cursor: pointer; font-size: 16px; }
 .icon-button:hover { color: #285c48; background: #edf3ed; }
-.signout-button { width: auto; display: flex; align-items: center; gap: 6px; padding: 0 8px; font-size: 11px; white-space: nowrap; }
 .workspace-main { min-width: 0; }
 .topbar { height: 62px; display: flex; align-items: center; justify-content: space-between; padding: 0 42px; border-bottom: 1px solid #e8ece6; background: rgba(255, 255, 255, .63); }
+.topbar-actions { display: flex; align-items: center; gap: 18px; }
+.header-signout { width: auto; min-height: 34px; display: inline-flex; align-items: center; justify-content: center; gap: 7px; padding: 0 12px; color: #345d46; background: white; font-size: 11px; white-space: nowrap; }
+.header-signout:hover { border-color: #cbd9cb; background: #f3f6f1; }
 .breadcrumb { display: flex; align-items: center; gap: 10px; color: #89928b; font-size: 11px; }
 .breadcrumb b { color: #c1c8c1; font-weight: 400; }
 .breadcrumb strong { color: #4a564d; font-weight: 600; }
@@ -354,8 +356,10 @@ a { color: inherit; text-decoration: none; }
   .nav-item { flex: none; min-height: 34px; padding: 0 9px; font-size: 10px; white-space: nowrap; }
   .nav-item > span { width: auto; font-size: 14px; }
   .nav-item small { display: none; }
-  .topbar { height: 45px; padding: 0 16px; }
-  .secure-label { font-size: 8px; }
+  .topbar { height: 52px; padding: 0 16px; }
+  .topbar-actions { gap: 9px; }
+  .secure-label { font-size: 7px; letter-spacing: .06em; }
+  .header-signout { min-height: 31px; gap: 4px; padding: 0 8px; font-size: 10px; }
   .content-area { padding: 25px 15px 43px; }
   .welcome-symbol { width: 47px; height: 47px; margin-right: 0; border-radius: 15px; font-size: 21px; }
   .welcome-row h1 { font-size: 26px; }

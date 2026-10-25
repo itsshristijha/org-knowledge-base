@@ -67,7 +67,7 @@ export default async function Home({ searchParams }: { searchParams: Promise<{ a
             <form action={signInWithGoogle}>
               <button className="button button-google" type="submit">
                 <GoogleMark />
-                Continue with Google
+                Sign in with Google
                 <span aria-hidden="true">→</span>
               </button>
             </form>

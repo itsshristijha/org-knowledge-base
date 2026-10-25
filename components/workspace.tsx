@@ -214,16 +214,18 @@ export function Workspace({ userEmail }: WorkspaceProps) {
         <div className="profile">
           <div className="avatar">{userEmail.slice(0, 1).toUpperCase()}</div>
           <div className="profile-copy"><strong>{userEmail.split("@")[0]}</strong><span>{userEmail}</span></div>
-          <button className="icon-button signout-button" type="button" onClick={signOut}>
-            <span aria-hidden="true">↗</span> Sign out
-          </button>
         </div>
       </aside>
 
       <section className="workspace-main">
         <header className="topbar">
           <div className="breadcrumb"><span>Workspace</span><b>/</b><strong>{tabTitle(activeTab)}</strong></div>
-          <div className="secure-label"><span /> PRIVATE WORKSPACE</div>
+          <div className="topbar-actions">
+            <div className="secure-label"><span /> PRIVATE WORKSPACE</div>
+            <button className="button button-small header-signout" type="button" onClick={signOut}>
+              <span aria-hidden="true">↗</span> Sign out
+            </button>
+          </div>
         </header>
         <div className="content-area">
           <div className="welcome-row">
