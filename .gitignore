@@ -1,0 +1,17 @@
+.env
+.env.*
+!.env.example
+venv/
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.streamlit/secrets.toml
+chroma_db/
+data/*
+!data/demo/
+!data/demo/**
+data/memory.sqlite3
+data/memory.sqlite3-shm
+data/memory.sqlite3-wal
+data/uploads/
