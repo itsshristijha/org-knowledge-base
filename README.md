@@ -11,8 +11,11 @@ Postgres; it does not use Supabase.
 - **GitHub repository:** [itsshristijha/org-knowledge-base](https://github.com/itsshristijha/org-knowledge-base)
 - **GitHub profile:** [github.com/itsshristijha](https://github.com/itsshristijha)
 
-The current Vercel deployment needs Google OAuth and Neon environment variables
-before sign-in and persistent storage can be activated.
+The production deployment is configured with Auth.js Google sign-in and a free
+Neon Postgres database. Google OAuth is in **Testing** mode, so only accounts
+listed as test users in Google Cloud can sign in. Add test users in the OAuth
+consent-screen settings, or complete Google's publishing requirements before
+opening sign-in to everyone.
 
 ## Features
 
@@ -64,14 +67,16 @@ Preview, and Development as appropriate:
 | `AUTH_GOOGLE_SECRET` | Yes | Google OAuth client secret |
 | `AUTH_SECRET` | Yes | Random secret used to sign Auth.js sessions |
 | `AUTH_URL` | Yes | `https://org-knowledge-base-nine.vercel.app` |
-| `DATABASE_URL` | Yes | Neon pooled Postgres connection string |
+| `DATABASE_URL` | Yes* | Neon Postgres connection string (pooled preferred) |
+| `DATABASE_URL_UNPOOLED` | Alternative* | Neon integration-provided unpooled connection string; used when `DATABASE_URL` is absent |
 | `OPENAI_API_KEY` | No | Optional model answer generation |
 | `OPENAI_BASE_URL` | No | Defaults to `https://api.openai.com/v1` |
 | `OPENAI_MODEL` | No | Defaults to `gpt-4o-mini` |
 
 Generate `AUTH_SECRET` with `openssl rand -base64 32`. Never commit credentials
 or put secrets in `NEXT_PUBLIC_*` variables. Redeploy after setting the
-variables, then use **Continue with Google**.
+variables, then use **Continue with Google**. Set either `DATABASE_URL` or
+`DATABASE_URL_UNPOOLED`; when both are present, the pooled URL takes precedence.
 
 ### 4. Run locally
 

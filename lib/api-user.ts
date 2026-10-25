@@ -1,13 +1,13 @@
 import { NextResponse } from "next/server";
 import { auth } from "@/auth";
-import { getDatabase } from "@/lib/database";
+import { getDatabase, isDatabaseConfigured } from "@/lib/database";
 
 export async function getApiUser() {
   if (
     !process.env.AUTH_SECRET ||
     !process.env.AUTH_GOOGLE_ID ||
     !process.env.AUTH_GOOGLE_SECRET ||
-    !process.env.DATABASE_URL
+    !isDatabaseConfigured()
   ) {
     return {
       response: NextResponse.json(

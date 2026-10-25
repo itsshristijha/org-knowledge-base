@@ -1,5 +1,6 @@
 import { Workspace } from "@/components/workspace";
 import { auth, signIn } from "@/auth";
+import { isDatabaseConfigured } from "@/lib/database";
 
 export const dynamic = "force-dynamic";
 
@@ -32,7 +33,7 @@ export default async function Home({ searchParams }: { searchParams: Promise<{ a
     !process.env.AUTH_SECRET ||
     !process.env.AUTH_GOOGLE_ID ||
     !process.env.AUTH_GOOGLE_SECRET ||
-    !process.env.DATABASE_URL
+    !isDatabaseConfigured()
   ) {
     return <SetupPage />;
   }

@@ -1,11 +1,31 @@
 import { neon } from "@neondatabase/serverless";
 
-export function getDatabase() {
-  const connectionString = process.env.DATABASE_URL;
+type DatabaseEnvironment = {
+  DATABASE_URL?: string;
+  DATABASE_URL_UNPOOLED?: string;
+};
+
+function currentDatabaseEnvironment(): DatabaseEnvironment {
+  return {
+    DATABASE_URL: process.env.DATABASE_URL,
+    DATABASE_URL_UNPOOLED: process.env.DATABASE_URL_UNPOOLED,
+  };
+}
+
+export function getDatabaseConnectionString(env: DatabaseEnvironment = currentDatabaseEnvironment()) {
+  const connectionString = env.DATABASE_URL || env.DATABASE_URL_UNPOOLED;
   if (!connectionString) {
-    throw new Error("Neon is not configured yet. Add DATABASE_URL to the Vercel project.");
+    throw new Error("Neon is not configured yet. Add DATABASE_URL or DATABASE_URL_UNPOOLED to the Vercel project.");
   }
-  return neon(connectionString);
+  return connectionString;
+}
+
+export function isDatabaseConfigured(env: DatabaseEnvironment = currentDatabaseEnvironment()) {
+  return Boolean(env.DATABASE_URL || env.DATABASE_URL_UNPOOLED);
+}
+
+export function getDatabase() {
+  return neon(getDatabaseConnectionString());
 }
 
 export async function ensureSchema() {
