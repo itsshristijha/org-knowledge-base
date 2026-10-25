@@ -39,6 +39,36 @@ for secret_name in (
     if secret_name in runtime_secrets and secret_name not in os.environ:
         os.environ[secret_name] = str(runtime_secrets[secret_name])
 
+auth_configuration = runtime_secrets.get("auth")
+if not isinstance(auth_configuration, dict) or not auth_configuration.get("client_id"):
+    st.title("Sign in to your knowledge workspace")
+    st.warning("Google sign-in is not configured for this deployment yet.")
+    st.markdown(
+        "Add the Google OpenID Connect settings described in "
+        "[`.streamlit/secrets.toml.example`](https://github.com/itsshristijha/org-knowledge-base/blob/main/.streamlit/secrets.toml.example) "
+        "to your local Streamlit secrets or Community Cloud app settings."
+    )
+    st.stop()
+
+if not st.user.is_logged_in:
+    st.title("Your team's organizational memory")
+    st.markdown("Sign in securely to search documents and return to your own saved answers.")
+    st.button("Continue with Google", type="primary", on_click=st.login)
+    st.stop()
+
+subject = st.user.get("sub")
+if not subject:
+    st.error("Your sign-in provider did not return a stable account identifier.")
+    st.stop()
+user_id = hashlib.sha256(
+    f"{auth_configuration.get('server_metadata_url', 'google')}:{subject}".encode("utf-8")
+).hexdigest()
+user_email = st.user.get("email", "Signed-in user")
+if st.session_state.get("active_user_id") != user_id:
+    for key in ("latest_result", "handover", "question_input", "ingestion_feedback"):
+        st.session_state.pop(key, None)
+    st.session_state["active_user_id"] = user_id
+
 st.markdown("""
 <style>
     :root {
@@ -181,7 +211,7 @@ def show_query_result(result: dict) -> None:
     show_citations(result["citations"])
 
 
-metrics = engine.metrics()
+metrics = engine.metrics(user_id)
 st.markdown('<div class="hero-kicker">TEAM KNOWLEDGE · MADE SEARCHABLE</div>', unsafe_allow_html=True)
 st.title("Organizational memory")
 st.markdown(
@@ -209,6 +239,9 @@ if feedback:
 
 with st.sidebar:
     st.markdown("### Knowledge library")
+    st.caption(f"Signed in as {user_email}")
+    if st.button("Sign out", use_container_width=True):
+        st.logout()
     st.caption("Add PDF, DOCX, TXT, Markdown, CSV, or JSON files.")
     uploaded_files = st.file_uploader(
         "Choose documents",
@@ -218,7 +251,8 @@ with st.sidebar:
         help=f"Maximum file size: {MAX_UPLOAD_BYTES // (1024 * 1024)} MB per file.",
     )
     if uploaded_files and st.button("Add selected documents", type="primary", use_container_width=True):
-        engine.upload_dir.mkdir(parents=True, exist_ok=True)
+        user_upload_dir = engine.upload_dir / user_id
+        user_upload_dir.mkdir(parents=True, exist_ok=True)
         progress = st.progress(0, text="Validating documents…")
         outcomes = []
         for index, uploaded in enumerate(uploaded_files):
@@ -227,13 +261,22 @@ with st.sidebar:
                 parse_file(uploaded.name, content)
                 digest = hashlib.sha256(content).hexdigest()
                 safe_name = Path(uploaded.name).name
-                destination = engine.upload_dir / f"{digest[:12]}_{safe_name}"
-                outcome = engine.ingest_bytes(uploaded.name, content, str(destination))
+                destination = user_upload_dir / f"{digest[:12]}_{safe_name}"
+                outcome = engine.ingest_bytes(
+                    uploaded.name,
+                    content,
+                    str(destination),
+                    owner_id=user_id,
+                )
                 if outcome["status"] == "indexed":
                     try:
                         destination.write_bytes(content)
                     except OSError as exc:
-                        engine.remove_document(outcome["document_id"], delete_uploaded_file=False)
+                        engine.remove_document(
+                            outcome["document_id"],
+                            user_id=user_id,
+                            delete_uploaded_file=False,
+                        )
                         destination.unlink(missing_ok=True)
                         raise IngestionError(f"Could not store uploaded file: {exc}") from exc
                 outcomes.append(outcome)
@@ -253,7 +296,7 @@ with st.sidebar:
 
     if st.button("Index files in data folders", use_container_width=True):
         with st.spinner("Extracting documents and updating the local index…"):
-            report = engine.index_all()
+            report = engine.index_all(owner_id=user_id)
         st.session_state["ingestion_feedback"] = {
             "indexed": report["indexed"],
             "duplicates": report["duplicates"],
@@ -308,22 +351,47 @@ with tab_qa:
     if st.button("Search knowledge", type="primary", disabled=not question.strip()):
         with st.spinner("Retrieving and checking source evidence…"):
             try:
-                result = engine.query(question)
+                result = engine.find_saved_answer(user_id, question)
+                if result is not None:
+                    engine.record_cached_query(user_id, question, result)
+                else:
+                    result = engine.query(question, user_id=user_id)
                 st.session_state["latest_result"] = result
-                st.session_state.setdefault("history", []).append(
-                    {"question": question, "result": result}
-                )
             except (ValueError, OSError, RuntimeError) as exc:
                 st.error(f"Search failed: {exc}")
 
-    for entry in reversed(st.session_state.get("history", [])):
+    latest_result = st.session_state.get("latest_result")
+    if latest_result:
         with st.container(border=True):
-            st.markdown(f"**You asked:** {entry['question']}")
-            show_query_result(entry["result"])
+            st.markdown(f"**You asked:** {question or latest_result.get('original_question', '')}")
+            if latest_result.get("cached"):
+                st.caption(
+                    "Reused your saved answer to "
+                    f"“{latest_result['original_question']}” from "
+                    f"{latest_result['cached_at'][:10]}; your indexed documents have not changed."
+                )
+            show_query_result(latest_result)
+
+    with st.expander("Your recent question history", expanded=False):
+        history = engine.list_user_history(user_id, limit=20)
+        if not history:
+            st.caption("Your questions and answers will appear here.")
+        for entry in history:
+            st.markdown(f"**{entry['question']}** · {entry['asked_at'][:10]}")
+            if entry["abstained"]:
+                st.caption(ABSTENTION)
+            else:
+                st.markdown(entry["answer"])
+            show_citations(entry["citations"])
+            st.divider()
+        if history and st.button("Clear my question history", key="clear_question_history"):
+            engine.clear_user_history(user_id)
+            st.session_state.pop("latest_result", None)
+            st.rerun()
 
 with tab_library:
     st.subheader("Indexed documents")
-    documents = engine.list_documents()
+    documents = engine.list_documents(user_id)
     if not documents:
         st.info("No documents indexed yet. Add a file in the sidebar or index the demo set.")
     for document in documents:
@@ -334,9 +402,10 @@ with tab_library:
                 f"{document['source_type']} · {document['stored_chunks']} chunks · "
                 f"indexed {document['ingested_at'][:10]}"
             )
-            if action.button("Remove", key=f"remove_{document['id']}"):
-                engine.remove_document(document["id"])
-                st.rerun()
+            if document["owner_id"] == user_id:
+                if action.button("Remove", key=f"remove_{document['id']}"):
+                    engine.remove_document(document["id"], user_id=user_id)
+                    st.rerun()
     st.caption("Removing an uploaded file also removes its stored copy. Files in the source folders remain on disk.")
 
 with tab_timeline:
@@ -357,7 +426,7 @@ with tab_conflicts:
     st.caption("Reports only differences in explicitly labeled facts; it does not infer a conflict from unrelated excerpts.")
     topic = st.text_input("Topic or decision area", value="payments pilot database")
     if st.button("Compare retrieved evidence", key="compare_evidence", disabled=not topic.strip()):
-        report = engine.detect_conflicts(topic)
+        report = engine.detect_conflicts(topic, user_id=user_id)
         st.write(report["summary"])
         if report["conflicts"]:
             for conflict in report["conflicts"]:
@@ -373,7 +442,7 @@ with tab_handover:
     project = st.text_input("Project or team", value="payments pilot", key="handover_project")
     if st.button("Build source-linked handover", key="build_handover", disabled=not project.strip()):
         with st.spinner("Collecting relevant project evidence…"):
-            st.session_state["handover"] = engine.generate_handover(project)
+            st.session_state["handover"] = engine.generate_handover(project, user_id=user_id)
     handover = st.session_state.get("handover")
     if handover:
         for title, excerpts in handover["sections"].items():

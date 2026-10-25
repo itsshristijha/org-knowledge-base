@@ -14,6 +14,10 @@ one intentional database-choice discrepancy.
   filename and available page/section/author/date metadata.
 - Stores the document library, chunks, query counts, and optional embedding
   vectors in a local SQLite database.
+- Requires Google OpenID Connect sign-in and scopes personal documents,
+  questions, saved answers, and history to the signed-in account.
+- Reuses a highly similar saved answer only while that user's visible document
+  corpus is unchanged; every new question is added to private question history.
 - Retrieves evidence with a local TF-IDF vector similarity score combined with
   a BM25-style lexical score. If configured, OpenAI-compatible embeddings add a
   semantic vector signal to that hybrid rank.
@@ -35,7 +39,7 @@ one intentional database-choice discrepancy.
    extracting text. Unreadable or empty documents are reported as errors.
 2. Content hashes prevent a byte-identical document from being indexed twice.
    Chunks and metadata are persisted in SQLite; uploaded source files are stored
-   under `data/uploads/`.
+   under a per-account subdirectory of `data/uploads/`.
 3. The query is ranked against indexed chunks with BM25-style term matching and
    local TF-IDF cosine similarity. `RETRIEVAL_MIN_SCORE` (default `0.12`) sets
    the evidence gate. A low-scoring query returns the abstention response before
@@ -76,6 +80,27 @@ On Windows, activate the environment with `.venv\Scripts\activate`. The app
 opens at the local URL printed by Streamlit, usually
 `http://localhost:8501`.
 
+### Configure Google sign-in
+
+1. In Google Cloud Console, create an OAuth client ID for a **Web application**
+   and add the app callback URL as an authorized redirect URI:
+   `http://localhost:8501/oauth2callback` locally, or
+   `https://<your-app>.streamlit.app/oauth2callback` for Streamlit Community
+   Cloud.
+2. Copy `.streamlit/secrets.toml.example` to
+   `.streamlit/secrets.toml` and replace the client ID, client secret, cookie
+   secret, and redirect URI. Keep this file private; it is excluded from Git.
+3. On Community Cloud, put the same `[auth]` settings in **App settings →
+   Secrets** instead of adding a file to the repository.
+4. Restart the app and use **Continue with Google**. Each account has a private
+   document library, answer history, and saved-answer cache. The app uses the
+   provider's stable subject claim as an internal user identifier and does not
+   use email addresses as database ownership keys.
+
+Do not publish OAuth credentials or the cookie secret. Google OAuth must be
+configured before the app can be used; without it, the app shows setup
+instructions and does not expose the workspace.
+
 ## Publish and deploy
 
 The repository is designed for **Streamlit Community Cloud**. Vercel does not
@@ -87,15 +112,16 @@ there. To publish it:
    GitHub.
 3. Choose **Create app**, select the repository and `main` branch, and set the
    app entry point to `app.py`.
-4. Add optional model credentials through **App settings → Secrets**, not by
-   committing `.env`. Set `OPENAI_API_KEY` there only if model generation is
-   desired.
+4. Add the Google `[auth]` settings above through **App settings → Secrets**.
+   Add optional model credentials there too, not by committing `.env`. Set
+   `OPENAI_API_KEY` only if model generation is desired.
 
 Streamlit Community Cloud's local filesystem is not a durable database. The
-included SQLite index and uploaded files can be lost when the app restarts or
-rebuilds. Re-index the bundled demo files after a restart; use a managed
-persistent database/object store before relying on uploaded knowledge in a
-long-lived deployment.
+included SQLite index, uploaded files, and question history can be lost when
+the app restarts or rebuilds. Re-index the bundled demo files after a restart;
+use a managed persistent database/object store before relying on uploads or
+history in a long-lived deployment. A user's history is private within the
+currently available app database, not a durability guarantee.
 
 The `.gitignore` deliberately excludes local `.env` files, the existing
 non-demo documents/exports, uploaded files, and local indexes. Only the
@@ -122,9 +148,10 @@ the application remains usable in local evidence-only mode.
 The fictional files are in `data/demo/`. Start the app, select **Load fictional
 demo set** in the sidebar, then ask questions in the **Ask a question** tab.
 This indexes only the synthetic sample files. **Index files in data folders**
-also searches `data/docs/`, `data/transcripts/`,
-`data/slack/`, `data/uploads/`, and `data/demo/`. Previously indexed content is
-skipped by its content hash. The SQLite database is created at
+searches `data/docs/`, `data/transcripts/`, and `data/slack/` for the signed-in
+account. Uploaded files are indexed as they are added and are not rescanned
+across account directories. Previously indexed content is skipped by its
+account-scoped content hash. The SQLite database is created at
 `data/memory.sqlite3`.
 
 The demo set includes a product brief, architecture meeting notes, ADR-014, an
@@ -157,7 +184,8 @@ python -m unittest discover -s tests -v
 
 Tests cover text/CSV/JSON parsing, invalid files, evidence retrieval, citation
 mapping, abstention, duplicate ingestion, discrepancy detection, handover
-gaps, local model-error fallback, and database-backed metrics.
+gaps, local model-error fallback, database-backed metrics, user isolation,
+saved-answer reuse, corpus invalidation, and persistent user history.
 
 ## Troubleshooting
 

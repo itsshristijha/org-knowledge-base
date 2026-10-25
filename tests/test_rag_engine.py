@@ -2,12 +2,12 @@ from __future__ import annotations
 
 import json
 import os
+import sqlite3
 import tempfile
 import unittest
 from io import BytesIO
 from pathlib import Path
 from unittest.mock import patch
-from docx import Document
 from docx import Document
 
 from rag_engine import ABSTENTION, IngestionError, OrganizationalMemoryEngine, parse_file
@@ -145,6 +145,101 @@ class RetrievalTests(unittest.TestCase):
         self.assertEqual(metrics["documents"], 2)
         self.assertGreater(metrics["chunks"], 0)
         self.assertEqual(metrics["queries"], 0)
+
+    def test_user_documents_are_isolated_from_other_accounts(self) -> None:
+        self.engine.ingest_bytes(
+            "alice-project.md",
+            b"# Cedar project\n\nThe Cedar launch date is 2026-09-18.",
+            owner_id="alice",
+        )
+        self.engine.ingest_bytes(
+            "bob-project.md",
+            b"# Nimbus project\n\nThe Nimbus launch date is 2026-11-02.",
+            owner_id="bob",
+        )
+
+        alice_docs = {item["filename"] for item in self.engine.list_documents("alice")}
+        self.assertIn("alice-project.md", alice_docs)
+        self.assertNotIn("bob-project.md", alice_docs)
+        alice_result = self.engine.query("When is the Cedar project launch date?", user_id="alice")
+        self.assertTrue(alice_result["citations"])
+        self.assertTrue(all(item["filename"] != "bob-project.md" for item in alice_result["citations"]))
+
+    def test_saved_answers_are_private_persisted_and_reused(self) -> None:
+        question = "Which database was selected for the Payments Pilot?"
+        original = self.engine.query(question, user_id="alice")
+        cached = self.engine.find_saved_answer("alice", question)
+
+        self.assertIsNotNone(cached)
+        self.assertEqual(cached["answer"], original["answer"])
+        self.assertIsNone(self.engine.find_saved_answer("bob", question))
+
+        similar_question = "For the Payments Pilot, which database was selected?"
+        similar = self.engine.find_saved_answer("alice", similar_question)
+        self.assertIsNotNone(similar)
+        self.engine.record_cached_query("alice", similar_question, similar)
+        history = self.engine.list_user_history("alice")
+        self.assertEqual([item["question"] for item in history[:2]], [similar_question, question])
+        self.assertEqual(self.engine.metrics("alice")["queries"], 2)
+
+        reopened = OrganizationalMemoryEngine(self.temp_dir.name, min_score=0.12)
+        self.assertEqual(len(reopened.list_user_history("alice")), 2)
+        self.assertEqual(reopened.list_user_history("bob"), [])
+
+    def test_saved_answer_is_invalidated_when_visible_corpus_changes(self) -> None:
+        question = "Which database was selected for the Payments Pilot?"
+        self.engine.query(question, user_id="alice")
+        self.assertIsNotNone(self.engine.find_saved_answer("alice", question))
+
+        self.engine.ingest_bytes(
+            "new-shared-record.md",
+            b"# New record\n\nThe project review date is 2026-10-01.",
+        )
+        self.assertIsNone(self.engine.find_saved_answer("alice", question))
+
+    def test_clearing_history_removes_account_questions_and_query_count(self) -> None:
+        self.engine.query("Which database was selected for the Payments Pilot?", user_id="alice")
+        self.engine.query("Which database was selected for the Payments Pilot?", user_id="bob")
+
+        self.engine.clear_user_history("alice")
+
+        self.assertEqual(self.engine.list_user_history("alice"), [])
+        self.assertEqual(self.engine.metrics("alice")["queries"], 0)
+        self.assertEqual(self.engine.metrics("bob")["queries"], 1)
+
+    def test_legacy_documents_are_quarantined_except_bundled_demo_files(self) -> None:
+        legacy_dir = Path(self.temp_dir.name) / "legacy"
+        demo_file = legacy_dir / "demo" / "fictional.md"
+        demo_file.parent.mkdir(parents=True)
+        demo_file.write_text("Fictional sample.", encoding="utf-8")
+        database = legacy_dir / "memory.sqlite3"
+        with sqlite3.connect(database) as connection:
+            connection.execute("""
+                CREATE TABLE documents (
+                    id INTEGER PRIMARY KEY,
+                    filename TEXT NOT NULL,
+                    source_path TEXT NOT NULL,
+                    sha256 TEXT NOT NULL UNIQUE,
+                    source_type TEXT NOT NULL,
+                    ingested_at TEXT NOT NULL,
+                    chunk_count INTEGER NOT NULL DEFAULT 0
+                )
+            """)
+            connection.executemany(
+                """INSERT INTO documents(filename, source_path, sha256, source_type, ingested_at)
+                   VALUES (?, ?, ?, 'Markdown', '2026-01-01')""",
+                [
+                    ("fictional.md", str(demo_file), "demo-hash"),
+                    ("old-private.md", str(legacy_dir / "uploads" / "old-private.md"), "private-hash"),
+                ],
+            )
+
+        migrated = OrganizationalMemoryEngine(legacy_dir)
+
+        self.assertEqual(
+            [item["filename"] for item in migrated.list_documents("alice")],
+            ["fictional.md"],
+        )
 
     def test_index_directories_scans_only_the_selected_folder(self) -> None:
         isolated_data = Path(self.temp_dir.name) / "isolated"

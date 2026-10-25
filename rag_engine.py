@@ -10,6 +10,7 @@ import math
 import os
 import re
 import sqlite3
+from difflib import SequenceMatcher
 import urllib.error
 import urllib.request
 from contextlib import contextmanager
@@ -38,6 +39,7 @@ except ImportError:
 
 
 ABSTENTION = "I couldn't find enough evidence in the available documents to answer this reliably."
+LEGACY_OWNER_ID = "__legacy_unassigned__"
 SUPPORTED_EXTENSIONS = {".pdf", ".docx", ".txt", ".md", ".csv", ".json"}
 MAX_UPLOAD_BYTES = int(os.getenv("MAX_UPLOAD_MB", "10")) * 1024 * 1024
 DEFAULT_MIN_SCORE = float(os.getenv("RETRIEVAL_MIN_SCORE", "0.12"))
@@ -324,10 +326,12 @@ class OrganizationalMemoryEngine:
                     id INTEGER PRIMARY KEY,
                     filename TEXT NOT NULL,
                     source_path TEXT NOT NULL,
-                    sha256 TEXT NOT NULL UNIQUE,
+                    sha256 TEXT NOT NULL,
+                    owner_id TEXT,
                     source_type TEXT NOT NULL,
                     ingested_at TEXT NOT NULL,
-                    chunk_count INTEGER NOT NULL DEFAULT 0
+                    chunk_count INTEGER NOT NULL DEFAULT 0,
+                    UNIQUE(sha256, owner_id)
                 );
                 CREATE TABLE IF NOT EXISTS chunks (
                     id INTEGER PRIMARY KEY,
@@ -345,8 +349,24 @@ class OrganizationalMemoryEngine:
                     id INTEGER PRIMARY KEY,
                     question TEXT NOT NULL,
                     asked_at TEXT NOT NULL,
-                    answer_mode TEXT NOT NULL
+                    answer_mode TEXT NOT NULL,
+                    user_id TEXT
                 );
+                CREATE TABLE IF NOT EXISTS answer_history (
+                    id INTEGER PRIMARY KEY,
+                    user_id TEXT NOT NULL,
+                    normalized_question TEXT NOT NULL,
+                    question TEXT NOT NULL,
+                    answer TEXT NOT NULL,
+                    citations_json TEXT NOT NULL,
+                    mode TEXT NOT NULL,
+                    notice TEXT,
+                    abstained INTEGER NOT NULL,
+                    corpus_version TEXT NOT NULL,
+                    asked_at TEXT NOT NULL
+                );
+                CREATE INDEX IF NOT EXISTS answer_history_user_date
+                    ON answer_history(user_id, asked_at DESC);
                 CREATE VIRTUAL TABLE IF NOT EXISTS chunk_search USING fts5(
                     text, content='chunks', content_rowid='id', tokenize='unicode61'
                 );
@@ -357,6 +377,33 @@ class OrganizationalMemoryEngine:
                     INSERT INTO chunk_search(chunk_search, rowid, text) VALUES('delete', old.id, old.text);
                 END;
             """)
+            document_columns = {
+                row["name"] for row in connection.execute("PRAGMA table_info(documents)")
+            }
+            if "owner_id" not in document_columns:
+                connection.execute("ALTER TABLE documents ADD COLUMN owner_id TEXT")
+                legacy_rows = connection.execute(
+                    "SELECT id, source_path FROM documents WHERE owner_id IS NULL"
+                ).fetchall()
+                demo_root = (self.data_dir / "demo").resolve()
+                for row in legacy_rows:
+                    source_path = row["source_path"]
+                    if not source_path or source_path.startswith("upload:"):
+                        connection.execute(
+                            "UPDATE documents SET owner_id = ? WHERE id = ?",
+                            (LEGACY_OWNER_ID, row["id"]),
+                        )
+                        continue
+                    try:
+                        Path(source_path).resolve().relative_to(demo_root)
+                    except (OSError, ValueError):
+                        connection.execute(
+                            "UPDATE documents SET owner_id = ? WHERE id = ?",
+                            (LEGACY_OWNER_ID, row["id"]),
+                        )
+            query_columns = {row["name"] for row in connection.execute("PRAGMA table_info(queries)")}
+            if "user_id" not in query_columns:
+                connection.execute("ALTER TABLE queries ADD COLUMN user_id TEXT")
 
     def _embed(self, texts: list[str]) -> list[list[float]] | None:
         if not self.use_openai_embeddings:
@@ -382,13 +429,22 @@ class OrganizationalMemoryEngine:
             ".json": "JSON",
         }[Path(filename).suffix.lower()]
 
-    def ingest_bytes(self, filename: str, content: bytes, source_path: str | None = None) -> dict[str, Any]:
+    def ingest_bytes(
+        self,
+        filename: str,
+        content: bytes,
+        source_path: str | None = None,
+        owner_id: str | None = None,
+    ) -> dict[str, Any]:
         safe_name = Path(filename).name
         sections = parse_file(safe_name, content)
-        digest = hashlib.sha256(content).hexdigest()
+        digest_source = (owner_id + "\0").encode("utf-8") + content if owner_id else content
+        digest = hashlib.sha256(digest_source).hexdigest()
         with self._connection() as connection:
             existing = connection.execute(
-                "SELECT id, filename, chunk_count FROM documents WHERE sha256 = ?", (digest,)
+                """SELECT id, filename, chunk_count FROM documents
+                   WHERE sha256 = ? AND owner_id IS ?""",
+                (digest, owner_id),
             ).fetchone()
             if existing:
                 return {"status": "duplicate", "document_id": existing["id"], "filename": existing["filename"],
@@ -421,9 +477,9 @@ class OrganizationalMemoryEngine:
         path_text = source_path or f"upload:{safe_name}"
         with self._connection() as connection:
             cursor = connection.execute(
-                """INSERT INTO documents(filename, source_path, sha256, source_type, ingested_at, chunk_count)
-                   VALUES (?, ?, ?, ?, ?, ?)""",
-                (safe_name, path_text, digest, self._source_type(safe_name),
+                """INSERT INTO documents(filename, source_path, sha256, owner_id, source_type, ingested_at, chunk_count)
+                   VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                (safe_name, path_text, digest, owner_id, self._source_type(safe_name),
                  datetime.now(timezone.utc).isoformat(), len(chunk_rows)),
             )
             document_id = cursor.lastrowid
@@ -444,15 +500,22 @@ class OrganizationalMemoryEngine:
             "embedding_warning": embedding_warning,
         }
 
-    def ingest_file(self, path: str | Path) -> dict[str, Any]:
+    def ingest_file(self, path: str | Path, owner_id: str | None = None) -> dict[str, Any]:
         source = Path(path).resolve()
-        return self.ingest_bytes(source.name, source.read_bytes(), str(source))
+        return self.ingest_bytes(source.name, source.read_bytes(), str(source), owner_id)
 
-    def index_all(self) -> dict[str, Any]:
+    def index_all(self, owner_id: str | None = None) -> dict[str, Any]:
         """Index supported files in the app's input folders and report per-file errors."""
-        return self.index_directories(("docs", "transcripts", "slack", "uploads", "demo"))
+        directories = ("docs", "transcripts", "slack")
+        if owner_id is None:
+            directories += ("uploads", "demo")
+        return self.index_directories(directories, owner_id)
 
-    def index_directories(self, directories: tuple[str, ...]) -> dict[str, Any]:
+    def index_directories(
+        self,
+        directories: tuple[str, ...],
+        owner_id: str | None = None,
+    ) -> dict[str, Any]:
         """Index selected source folders without scanning unrelated local documents."""
         results: list[dict[str, Any]] = []
         for directory in directories:
@@ -463,7 +526,7 @@ class OrganizationalMemoryEngine:
                 if not source.is_file() or source.suffix.lower() not in SUPPORTED_EXTENSIONS:
                     continue
                 try:
-                    results.append(self.ingest_file(source))
+                    results.append(self.ingest_file(source, owner_id))
                 except (OSError, IngestionError) as exc:
                     results.append({"status": "error", "filename": source.name, "error": str(exc)})
         return {
@@ -477,20 +540,28 @@ class OrganizationalMemoryEngine:
             "results": results,
         }
 
-    def list_documents(self) -> list[dict[str, Any]]:
+    def list_documents(self, user_id: str | None = None) -> list[dict[str, Any]]:
         with self._connection() as connection:
             rows = connection.execute(
                 """SELECT d.id, d.filename, d.source_type, d.ingested_at, d.chunk_count,
-                          d.source_path, COUNT(c.id) AS stored_chunks
+                          d.source_path, d.owner_id, COUNT(c.id) AS stored_chunks
                    FROM documents d LEFT JOIN chunks c ON c.document_id = d.id
+                   WHERE d.owner_id IS NULL OR d.owner_id IS ?
                    GROUP BY d.id ORDER BY d.ingested_at DESC, d.filename"""
-            ).fetchall()
+            , (user_id,)).fetchall()
         return [dict(row) for row in rows]
 
-    def remove_document(self, document_id: int, delete_uploaded_file: bool = True) -> bool:
+    def remove_document(
+        self,
+        document_id: int,
+        user_id: str | None = None,
+        delete_uploaded_file: bool = True,
+    ) -> bool:
         with self._connection() as connection:
             row = connection.execute(
-                "SELECT source_path FROM documents WHERE id = ?", (document_id,)
+                """SELECT source_path, owner_id FROM documents
+                   WHERE id = ? AND owner_id IS ?""",
+                (document_id, user_id),
             ).fetchone()
             if not row:
                 return False
@@ -506,17 +577,24 @@ class OrganizationalMemoryEngine:
                 source_path.unlink(missing_ok=True)
         return True
 
-    def _chunks(self) -> list[dict[str, Any]]:
+    def _chunks(self, user_id: str | None = None) -> list[dict[str, Any]]:
         with self._connection() as connection:
             rows = connection.execute(
                 """SELECT c.id, c.text, c.page, c.section, c.author, c.recorded_at, c.embedding,
-                          d.filename, d.source_type, d.ingested_at
-                   FROM chunks c JOIN documents d ON d.id = c.document_id"""
+                          d.filename, d.source_type, d.ingested_at, d.owner_id
+                   FROM chunks c JOIN documents d ON d.id = c.document_id
+                   WHERE d.owner_id IS NULL OR d.owner_id IS ?""",
+                (user_id,),
             ).fetchall()
         return [dict(row) for row in rows]
 
-    def _search(self, question: str, limit: int = 6) -> list[dict[str, Any]]:
-        chunks = self._chunks()
+    def _search(
+        self,
+        question: str,
+        limit: int = 6,
+        user_id: str | None = None,
+    ) -> list[dict[str, Any]]:
+        chunks = self._chunks(user_id)
         question_tokens = _tokens(question)
         if not chunks or not question_tokens:
             return []
@@ -616,11 +694,11 @@ class OrganizationalMemoryEngine:
                 f"Model generation was unavailable ({exc}); showing retrieved excerpts instead."
             )
 
-    def query(self, question: str) -> dict[str, Any]:
+    def query(self, question: str, user_id: str | None = None) -> dict[str, Any]:
         question = question.strip()
         if not question:
             raise ValueError("Question cannot be empty.")
-        retrieved = self._search(question)
+        retrieved = self._search(question, user_id=user_id)
         citations = [self._citation(chunk, f"S{index}") for index, chunk in enumerate(retrieved, start=1)]
         if not citations:
             answer, mode, notice = ABSTENTION, "abstention", None
@@ -628,8 +706,8 @@ class OrganizationalMemoryEngine:
             answer, mode, notice = self._generate_answer(question, citations)
         with self._connection() as connection:
             connection.execute(
-                "INSERT INTO queries(question, asked_at, answer_mode) VALUES (?, ?, ?)",
-                (question, datetime.now(timezone.utc).isoformat(), mode),
+                "INSERT INTO queries(question, asked_at, answer_mode, user_id) VALUES (?, ?, ?, ?)",
+                (question, datetime.now(timezone.utc).isoformat(), mode, user_id),
             )
         timeline = []
         for citation in citations:
@@ -653,7 +731,7 @@ class OrganizationalMemoryEngine:
             return datetime.max
 
         timeline.sort(key=timeline_order)
-        return {
+        result = {
             "answer": answer,
             "citations": citations,
             "timeline": timeline,
@@ -661,9 +739,15 @@ class OrganizationalMemoryEngine:
             "notice": notice,
             "abstained": answer == ABSTENTION,
         }
+        if user_id:
+            self._save_answer(user_id, question, result)
+        return result
 
-    def detect_conflicts(self, topic: str) -> dict[str, Any]:
-        citations = [self._citation(item, f"S{index}") for index, item in enumerate(self._search(topic, 12), start=1)]
+    def detect_conflicts(self, topic: str, user_id: str | None = None) -> dict[str, Any]:
+        citations = [
+            self._citation(item, f"S{index}")
+            for index, item in enumerate(self._search(topic, 12, user_id), start=1)
+        ]
         facts: dict[str, list[tuple[str, dict[str, Any]]]] = {}
         pattern = re.compile(r"(?im)^\s*([A-Za-z][A-Za-z0-9 _/-]{2,40})\s*:\s*([^\n.;]+)")
         for citation in citations:
@@ -691,9 +775,10 @@ class OrganizationalMemoryEngine:
             if conflicts else "No explicit, labeled discrepancies were detected in the retrieved evidence.",
         }
 
-    def generate_handover(self, project_or_role: str) -> dict[str, Any]:
+    def generate_handover(self, project_or_role: str, user_id: str | None = None) -> dict[str, Any]:
         result = self.query(
-            f"{project_or_role} project status key decisions outstanding tasks risks blockers contacts"
+            f"{project_or_role} project status key decisions outstanding tasks risks blockers contacts",
+            user_id,
         )
         categories = {
             "Current project status": ("status", "complete", "pilot", "launch", "progress"),
@@ -714,9 +799,136 @@ class OrganizationalMemoryEngine:
         return {"project": project_or_role, "sections": sections, "citations": result["citations"],
                 "mode": result["mode"], "notice": result["notice"]}
 
-    def metrics(self) -> dict[str, int]:
+    @staticmethod
+    def _normalise_question(question: str) -> str:
+        return " ".join(_tokens(question))
+
+    def _corpus_version(self, user_id: str) -> str:
         with self._connection() as connection:
-            docs = connection.execute("SELECT COUNT(*) FROM documents").fetchone()[0]
-            chunks = connection.execute("SELECT COUNT(*) FROM chunks").fetchone()[0]
-            queries = connection.execute("SELECT COUNT(*) FROM queries").fetchone()[0]
+            rows = connection.execute(
+                """SELECT sha256 FROM documents
+                   WHERE owner_id IS NULL OR owner_id IS ?
+                   ORDER BY sha256""",
+                (user_id,),
+            ).fetchall()
+        return hashlib.sha256(
+            "\n".join(row["sha256"] for row in rows).encode("utf-8")
+        ).hexdigest()
+
+    def _save_answer(self, user_id: str, question: str, result: dict[str, Any]) -> None:
+        now = datetime.now(timezone.utc).isoformat()
+        corpus_version = self._corpus_version(user_id)
+        with self._connection() as connection:
+            connection.execute(
+                """INSERT INTO answer_history(
+                       user_id, normalized_question, question, answer, citations_json, mode,
+                       notice, abstained, corpus_version, asked_at
+                   ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (
+                    user_id,
+                    self._normalise_question(question),
+                    question,
+                    result["answer"],
+                    json.dumps(result["citations"]),
+                    result["mode"],
+                    result.get("notice"),
+                    int(result["abstained"]),
+                    corpus_version,
+                    now,
+                ),
+            )
+
+    def find_saved_answer(self, user_id: str, question: str) -> dict[str, Any] | None:
+        normalized = self._normalise_question(question)
+        if len(normalized.split()) < 3:
+            return None
+        corpus_version = self._corpus_version(user_id)
+        with self._connection() as connection:
+            rows = connection.execute(
+                """SELECT question, normalized_question, answer, citations_json, mode, notice,
+                          abstained, asked_at
+                   FROM answer_history
+                   WHERE user_id = ? AND corpus_version = ?
+                   ORDER BY asked_at DESC LIMIT 100""",
+                (user_id, corpus_version),
+            ).fetchall()
+        query_terms = set(normalized.split())
+        best_match: sqlite3.Row | None = None
+        best_score = 0.0
+        for row in rows:
+            previous = row["normalized_question"]
+            if normalized == previous:
+                score = 1.0
+            else:
+                previous_terms = set(previous.split())
+                overlap = len(query_terms & previous_terms) / len(query_terms | previous_terms)
+                sequence = SequenceMatcher(None, normalized, previous).ratio()
+                score = max(overlap, sequence)
+                if score < 0.86:
+                    continue
+            if score > best_score:
+                best_match, best_score = row, score
+        if best_match is None:
+            return None
+        return {
+            "answer": best_match["answer"],
+            "citations": json.loads(best_match["citations_json"]),
+            "timeline": [],
+            "mode": "cached",
+            "notice": best_match["notice"],
+            "abstained": bool(best_match["abstained"]),
+            "cached": True,
+            "cached_at": best_match["asked_at"],
+            "original_question": best_match["question"],
+        }
+
+    def record_cached_query(self, user_id: str, question: str, result: dict[str, Any]) -> None:
+        with self._connection() as connection:
+            connection.execute(
+                "INSERT INTO queries(question, asked_at, answer_mode, user_id) VALUES (?, ?, 'cached', ?)",
+                (question, datetime.now(timezone.utc).isoformat(), user_id),
+            )
+        self._save_answer(user_id, question, result)
+
+    def list_user_history(self, user_id: str, limit: int = 50) -> list[dict[str, Any]]:
+        with self._connection() as connection:
+            rows = connection.execute(
+                """SELECT question, answer, citations_json, mode, notice, abstained, asked_at
+                   FROM answer_history WHERE user_id = ?
+                   ORDER BY asked_at DESC LIMIT ?""",
+                (user_id, limit),
+            ).fetchall()
+        return [
+            {
+                "question": row["question"],
+                "answer": row["answer"],
+                "citations": json.loads(row["citations_json"]),
+                "mode": row["mode"],
+                "notice": row["notice"],
+                "abstained": bool(row["abstained"]),
+                "asked_at": row["asked_at"],
+            }
+            for row in rows
+        ]
+
+    def clear_user_history(self, user_id: str) -> None:
+        with self._connection() as connection:
+            connection.execute("DELETE FROM answer_history WHERE user_id = ?", (user_id,))
+            connection.execute("DELETE FROM queries WHERE user_id = ?", (user_id,))
+
+    def metrics(self, user_id: str | None = None) -> dict[str, int]:
+        with self._connection() as connection:
+            docs = connection.execute(
+                "SELECT COUNT(*) FROM documents WHERE owner_id IS NULL OR owner_id IS ?",
+                (user_id,),
+            ).fetchone()[0]
+            chunks = connection.execute(
+                """SELECT COUNT(*) FROM chunks c JOIN documents d ON d.id = c.document_id
+                   WHERE d.owner_id IS NULL OR d.owner_id IS ?""",
+                (user_id,),
+            ).fetchone()[0]
+            queries = connection.execute(
+                "SELECT COUNT(*) FROM queries WHERE user_id IS ?",
+                (user_id,),
+            ).fetchone()[0]
         return {"documents": docs, "chunks": chunks, "queries": queries}
