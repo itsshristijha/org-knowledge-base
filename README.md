@@ -1,237 +1,104 @@
-# Organizational Memory
+# Northstar — Organizational Memory
 
-A small, local-first application for searching team documents, tracing dated
-decisions, comparing explicitly labeled facts, and preparing a source-linked
-handover. The included demo documents describe a fictional company and contain
-one intentional database-choice discrepancy.
+Northstar is a private, source-grounded knowledge workspace. Sign in with
+Google, upload team records, ask questions in everyday language, and trace
+answers back to their source passages. The Vercel version is built with
+Next.js; Supabase provides Google-backed authentication, PostgreSQL, row-level
+security, and private document storage.
 
 ## What it does
 
-- Ingests PDF, DOCX, TXT, Markdown, CSV, and JSON files.
-- Extracts page numbers from PDFs, headings from Markdown/text, and author/date
-  metadata from JSON message records.
-- Splits extracted text into overlapping chunks while retaining source
-  filename and available page/section/author/date metadata.
-- Stores the document library, chunks, query counts, and optional embedding
-  vectors in a local SQLite database.
-- Requires Google OpenID Connect sign-in and scopes personal documents,
-  questions, saved answers, and history to the signed-in account.
-- Reuses a highly similar saved answer only while that user's visible document
-  corpus is unchanged; every new question is added to private question history.
-- Retrieves evidence with a local TF-IDF vector similarity score combined with
-  a BM25-style lexical score. If configured, OpenAI-compatible embeddings add a
-  semantic vector signal to that hybrid rank.
-- Uses an optional OpenAI-compatible chat model to synthesize answers from
-  retrieved evidence. Without a model key, it returns source excerpts directly
-  and labels the response **evidence-only**; it does not invent an answer.
-- Displays source IDs, exact retrieved excerpts, file names, available page or
-  section, and relevance scores with every supported answer.
-- Abstains with the exact response
-  “I couldn't find enough evidence in the available documents to answer this
-  reliably.” when no retrieved passage meets the relevance threshold.
-- Includes an explicit-label discrepancy detector and a structured handover
-  view. The discrepancy detector is intentionally conservative and does not
-  claim to detect every kind of contradiction.
+- Google sign-in through Supabase Auth.
+- Private PDF, DOCX, TXT, Markdown, CSV, and JSON uploads (10 MB per file).
+- Source-linked answers with explicit abstention when retrieval finds no
+  supporting passages.
+- Optional OpenAI-compatible answer generation; evidence-only excerpts work
+  without an AI key.
+- Private question history and cautious similar-question reuse. A saved answer
+  is reused only for a close match and the same indexed-document fingerprint.
+- Document library, dated evidence timeline, discrepancy review, and handover
+  brief.
+- Supabase row-level security scopes documents, chunks, answers, and stored
+  files to the signed-in user.
 
-## RAG and evidence behavior
+The included demo set is fictional and intentionally contains an outdated
+database-choice statement to demonstrate a source discrepancy.
 
-1. The parser validates an allowed extension and file-size limit before
-   extracting text. Unreadable or empty documents are reported as errors.
-2. Content hashes prevent a byte-identical document from being indexed twice.
-   Chunks and metadata are persisted in SQLite; uploaded source files are stored
-   under a per-account subdirectory of `data/uploads/`.
-3. The query is ranked against indexed chunks with BM25-style term matching and
-   local TF-IDF cosine similarity. `RETRIEVAL_MIN_SCORE` (default `0.12`) sets
-   the evidence gate. A low-scoring query returns the abstention response before
-   any generation request.
-4. If `OPENAI_API_KEY` is configured, the app sends the selected excerpts and
-   question to the configured chat model. Source text is explicitly treated as
-   untrusted data, not instructions. The app only accepts a model answer when
-   it includes valid source markers such as `[S1]`; otherwise it shows the
-   retrieved excerpts instead.
-5. If no API key is configured, retrieval still works locally and answers are
-   assembled from exact source excerpts. This is not presented as model
-   generation. If an API call fails, the app shows a notice and uses the same
-   evidence-only fallback.
+## Deploy to Vercel
 
-The local TF-IDF method is lexical rather than a pretrained language embedding;
-it is suitable for a small demo corpus, but synonyms and paraphrases may be
-missed. Configure optional embeddings for a semantic vector signal. OpenAI
-embeddings and chat generation transmit the query and selected document
-excerpts to the configured endpoint and may incur provider charges. Do not use
-confidential documents with an external provider unless the organization's
-privacy policy permits it.
+### 1. Create and configure Supabase
 
-## Setup
+1. Create a Supabase project.
+2. In **SQL Editor**, run [`supabase/schema.sql`](./supabase/schema.sql). This
+   creates the tables, full-text search function, private Storage bucket, and
+   row-level security policies used by the app.
+3. In **Authentication → Providers → Google**, enable Google and add the
+   OAuth client ID and secret from Google Cloud Console.
+4. In Google Cloud Console, configure the OAuth web client redirect URI as
+   `https://<your-project-ref>.supabase.co/auth/v1/callback` (shown by
+   Supabase's Google provider setup).
+5. In **Authentication → URL Configuration**, set the Site URL to your Vercel
+   deployment and allow both
+   `https://<your-vercel-domain>/auth/callback` and
+   `http://localhost:3000/auth/callback`.
+6. Copy the Supabase project URL and publishable/anon key from **Project
+   Settings → API**. Do not use a service-role key in this app.
 
-Python 3.10 or newer is required (the workspace was checked with Python 3.14).
+### 2. Import the GitHub project into Vercel
 
-```bash
-cd /path/to/org-knowledge-base
-python3 -m venv .venv
-source .venv/bin/activate
-python -m pip install --upgrade pip
-pip install -r requirements.txt
-cp -n .env.example .env
-streamlit run app.py
-```
+1. Sign in at [Vercel](https://vercel.com/) and choose **Add New → Project**.
+2. Import [`itsshristijha/org-knowledge-base`](https://github.com/itsshristijha/org-knowledge-base).
+3. Keep the detected **Next.js** framework and root directory at `./`.
+   Vercel uses [`vercel.json`](./vercel.json) and the `npm run build` script.
+4. Add these environment variables in the project settings for **Production,
+   Preview, and Development**:
 
-On Windows, activate the environment with `.venv\Scripts\activate`. The app
-opens at the local URL printed by Streamlit, usually
-`http://localhost:8501`.
+   | Variable | Required | Value |
+   | --- | --- | --- |
+   | `NEXT_PUBLIC_SUPABASE_URL` | Yes | Supabase project URL |
+   | `NEXT_PUBLIC_SUPABASE_ANON_KEY` | Yes | Supabase publishable/anon key |
+   | `OPENAI_API_KEY` | No | Optional model answer generation |
+   | `OPENAI_BASE_URL` | No | Defaults to `https://api.openai.com/v1` |
+   | `OPENAI_MODEL` | No | Defaults to `gpt-4o-mini` |
 
-### Configure Google sign-in
+5. Deploy. Add the generated Vercel domain to the Supabase Auth Site URL and
+   redirect allowlist, then redeploy if you changed environment variables.
+6. Open the deployment URL and choose **Continue with Google**.
 
-1. In Google Cloud Console, create an OAuth client ID for a **Web application**
-   and add the app callback URL as an authorized redirect URI:
-   `http://localhost:8501/oauth2callback` locally, or
-   `https://<your-app>.streamlit.app/oauth2callback` for Streamlit Community
-   Cloud.
-2. Copy `.streamlit/secrets.toml.example` to
-   `.streamlit/secrets.toml` and replace the client ID, client secret, cookie
-   secret, and redirect URI. Keep this file private; it is excluded from Git.
-3. On Community Cloud, put the same `[auth]` settings in **App settings →
-   Secrets** instead of adding a file to the repository.
-4. Restart the app and use **Continue with Google**. Each account has a private
-   document library, answer history, and saved-answer cache. The app uses the
-   provider's stable subject claim as an internal user identifier and does not
-   use email addresses as database ownership keys.
-
-Do not publish OAuth credentials or the cookie secret. Google OAuth must be
-configured before the app can be used; without it, the app shows setup
-instructions and does not expose the workspace.
-
-## Publish and deploy
-
-The repository is designed for **Streamlit Community Cloud**. Vercel does not
-run a persistent Streamlit server, so this Streamlit version is not deployed
-there. To publish it:
-
-1. Create a new GitHub repository and push the project.
-2. Open [share.streamlit.io](https://share.streamlit.io/) and sign in with
-   GitHub.
-3. Choose **Create app**, select the repository and `main` branch, and set the
-   app entry point to `app.py`.
-4. Add the Google `[auth]` settings above through **App settings → Secrets**.
-   Add optional model credentials there too, not by committing `.env`. Set
-   `OPENAI_API_KEY` only if model generation is desired.
-
-Streamlit Community Cloud's local filesystem is not a durable database. The
-included SQLite index, uploaded files, and question history can be lost when
-the app restarts or rebuilds. Re-index the bundled demo files after a restart;
-use a managed persistent database/object store before relying on uploads or
-history in a long-lived deployment. A user's history is private within the
-currently available app database, not a durability guarantee.
-
-The `.gitignore` deliberately excludes local `.env` files, the existing
-non-demo documents/exports, uploaded files, and local indexes. Only the
-fictional `data/demo/` set is intended for the public repository.
-
-### Environment variables
-
-| Variable | Default | Purpose |
-| --- | --- | --- |
-| `DATA_DIR` | `data` | Root directory for input folders and the SQLite database |
-| `MAX_UPLOAD_MB` | `10` | Maximum accepted upload size per file |
-| `RETRIEVAL_MIN_SCORE` | `0.12` | Minimum hybrid retrieval score required to answer |
-| `OPENAI_API_KEY` | unset | Enables optional model-generated answers |
-| `OPENAI_BASE_URL` | `https://api.openai.com/v1` | OpenAI-compatible API base URL |
-| `OPENAI_MODEL` | `gpt-4o-mini` | Chat completion model |
-| `EMBEDDING_PROVIDER` | `local` | Use `openai` for optional remote embeddings |
-| `EMBEDDING_MODEL` | `text-embedding-3-small` | Embedding model when enabled |
-
-Keep `.env` private; it is excluded by `.gitignore`. Without `OPENAI_API_KEY`,
-the application remains usable in local evidence-only mode.
-
-## Load the demo documents
-
-The fictional files are in `data/demo/`. Start the app, select **Load fictional
-demo set** in the sidebar, then ask questions in the **Ask a question** tab.
-This indexes only the synthetic sample files. **Index files in data folders**
-searches `data/docs/`, `data/transcripts/`, and `data/slack/` for the signed-in
-account. Uploaded files are indexed as they are added and are not rescanned
-across account directories. Previously indexed content is skipped by its
-account-scoped content hash. The SQLite database is created at
-`data/memory.sqlite3`.
-
-The demo set includes a product brief, architecture meeting notes, ADR-014, an
-incident record, and a handover note. It intentionally contains a stale
-`Database choice: MongoDB` line in the handover that conflicts with the
-accepted `Database choice: PostgreSQL` in ADR-014.
-
-## Five demo questions
-
-1. **“Which database was selected for the Payments Pilot?”** — Returns the
-   relevant ADR and handover excerpts with source markers. The discrepancy view
-   shows the conflicting labeled values.
-2. **“What is the current rollout status?”** — Retrieves the handover's
-   internal-validation status and states that production launch is not approved.
-3. **“What issue occurred in the reconciliation test?”** — Cites the incident
-   report and its resolution in the test environment.
-4. **“What is the approved annual compensation budget?”** — Abstains
-   because the demo documents do not contain that information.
-5. **“What retention period was approved?”** — Abstains or reports that it
-   remains undocumented, depending on the retrieved evidence; the records say
-   it is still a follow-up, not an approved value.
-
-## Tests
-
-Run the standard-library test suite from the project root:
+For local development, copy [`.env.example`](./.env.example) to `.env.local`,
+fill in the Supabase URL and publishable key, then run:
 
 ```bash
-python -m unittest discover -s tests -v
+npm install
+npm run dev
 ```
 
-Tests cover text/CSV/JSON parsing, invalid files, evidence retrieval, citation
-mapping, abstention, duplicate ingestion, discrepancy detection, handover
-gaps, local model-error fallback, database-backed metrics, user isolation,
-saved-answer reuse, corpus invalidation, and persistent user history.
+The local app is at `http://localhost:3000`. Add that callback URL to the
+Supabase Auth redirect allowlist.
 
-## Troubleshooting
+## Data handling and privacy
 
-- **“No readable text could be extracted”**: scanned/image-only PDFs need OCR,
-  which is not currently included. Try a text-searchable PDF or DOCX/text copy.
-- **PDF/DOCX support unavailable**: install the requirements in the same Python
-  environment used to run Streamlit.
-- **No answer or an abstention**: index the intended files and try a question
-  using terms found in the source. For a small demo corpus, adjust
-  `RETRIEVAL_MIN_SCORE` cautiously; lower thresholds can admit irrelevant
-  evidence.
-- **Model unavailable**: verify the endpoint and environment variables. The app
-  will label its evidence-only fallback and continue to show source excerpts.
-- **A removed source returns after re-indexing**: removal deletes an uploaded
-  copy, but files under `data/docs/`, `data/transcripts/`, `data/slack/`, or
-  `data/demo/` remain on disk and are re-imported when those folders are
-  indexed again.
-- **Need a clean local index**: stop the app, back up any useful local data, and
-  remove only `data/memory.sqlite3` plus its `-wal`/`-shm` files. Re-index the
-  source folders afterward.
+- Supabase is the system of record for user documents, searchable passages,
+  private uploaded files, and question history. The Vercel function filesystem
+  is not used for durable user data.
+- PostgreSQL row-level security is enabled by the provided schema. The app
+  authenticates each request and never uses a Supabase service-role key.
+- Similar-answer reuse is disabled when the visible document set changes.
+  Answers without supporting evidence are not used as cache hits.
+- When `OPENAI_API_KEY` is set, the question and selected source excerpts are
+  sent to the configured model endpoint. Review your organization's data policy
+  before enabling external generation for sensitive records.
+- The `data/demo/` documents are synthetic. No local PDFs, transcripts, Slack
+  exports, databases, credentials, or uploaded files belong in the public repo.
 
-## Architecture and limitations
+## Tests and checks
 
-- `app.py`: Streamlit UI, uploads, dashboard metrics, evidence display, timeline,
-  discrepancy view, and handover.
-- `rag_engine.py`: parsers, chunking, SQLite persistence, hybrid retrieval,
-  optional OpenAI-compatible calls, citation mapping, abstention, and
-  evidence-derived features.
-- `data/demo/`: fictional, cross-referenced sample knowledge base.
-- `tests/`: parser, retrieval, citation, abstention, conflict, and fallback
-  checks.
+```bash
+npm test
+npm run typecheck
+npm run build
+```
 
-This is a single-user local prototype, not a production multi-tenant service.
-It has no authentication, authorization, encryption-at-rest policy, OCR,
-advanced contradiction model, or query-level access controls. Protect the
-workspace and any indexed records accordingly. Conflict detection only compares
-different values under the same explicit `Key: Value` label in retrieved
-evidence; it cannot reliably detect implicit or nuanced contradictions.
-
-## Hackathon demo walkthrough
-
-1. Start Streamlit and index the bundled demo files.
-2. Ask which database was selected; expand sources to inspect the ADR and stale
-   handover evidence.
-3. Open **Find discrepancies** and compare the payments pilot database facts.
-4. Ask for the reconciliation incident and inspect the cited incident report.
-5. Ask for an office address to demonstrate abstention.
-6. Generate a payments pilot handover and point out fields the sources do not
-   document.
+Tests cover supported-format parsing, invalid uploads, chunk boundaries,
+question-similarity safety, corpus fingerprints, evidence citations, and date
+extraction. The build check validates the Next.js Vercel deployment bundle.
