@@ -1,23 +1,16 @@
 import { getApiUser, jsonError } from "@/lib/api-user";
+import { ensureSchema } from "@/lib/database";
 
 export async function DELETE(_request: Request, context: { params: Promise<{ id: string }> }) {
   const auth = await getApiUser();
   if ("response" in auth) return auth.response;
+  await ensureSchema();
   const { id } = await context.params;
-  const { data: document, error: lookupError } = await auth.supabase
-    .from("documents")
-    .select("id, storage_path")
-    .eq("id", id)
-    .maybeSingle();
-  if (lookupError) return jsonError(`Could not load the document: ${lookupError.message}`, 500);
-  if (!document) return jsonError("Document not found.", 404);
-
-  const { error: storageError } = await auth.supabase.storage
-    .from("organization-documents")
-    .remove([document.storage_path]);
-  if (storageError) return jsonError(`Could not remove the stored file: ${storageError.message}`, 500);
-
-  const { error: deleteError } = await auth.supabase.from("documents").delete().eq("id", id);
-  if (deleteError) return jsonError(`Could not remove the document: ${deleteError.message}`, 500);
+  const deleted = await auth.sql`
+    delete from public.documents
+    where id = ${id} and owner_id = ${auth.userId}
+    returning id
+  `;
+  if (!deleted.length) return jsonError("Document not found.", 404);
   return Response.json({ removed: true });
 }

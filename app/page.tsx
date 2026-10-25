@@ -1,5 +1,5 @@
 import { Workspace } from "@/components/workspace";
-import { createSupabaseServerClient } from "@/lib/supabase/server";
+import { auth } from "@/auth";
 
 export const dynamic = "force-dynamic";
 
@@ -11,8 +11,8 @@ function SetupPage() {
         <p className="eyebrow">NORTHSTAR · ORGANIZATIONAL MEMORY</p>
         <h1>Connect the secure knowledge workspace.</h1>
         <p className="muted">
-          Before launch, configure the Supabase project and Google provider using the deployment guide.
-          This app stays closed until authentication and row-level security are configured.
+          Configure Google OAuth and a Neon Postgres database using the deployment guide.
+          Sign-in and private workspace data remain disabled until both are configured.
         </p>
         <a className="button button-primary" href="https://github.com/itsshristijha/org-knowledge-base#deploy-to-vercel">
           Read deployment setup
@@ -23,12 +23,17 @@ function SetupPage() {
 }
 
 export default async function Home({ searchParams }: { searchParams: Promise<{ auth?: string }> }) {
-  if (!process.env.NEXT_PUBLIC_SUPABASE_URL || !process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY) {
+  if (
+    !process.env.AUTH_SECRET ||
+    !process.env.AUTH_GOOGLE_ID ||
+    !process.env.AUTH_GOOGLE_SECRET ||
+    !process.env.DATABASE_URL
+  ) {
     return <SetupPage />;
   }
 
-  const supabase = await createSupabaseServerClient();
-  const { data: { user } } = await supabase.auth.getUser();
+  const session = await auth();
+  const user = session?.user;
   if (!user) {
     const { auth } = await searchParams;
     return (
@@ -53,7 +58,7 @@ export default async function Home({ searchParams }: { searchParams: Promise<{ a
             <h2>Your knowledge, in context.</h2>
             <p className="muted">Sign in to open your private workspace.</p>
             {auth === "failed" && <p className="error-message">Google sign-in could not be completed. Please try again.</p>}
-            <a className="button button-google" href="/login">
+            <a className="button button-google" href="/api/auth/signin/google">
               <GoogleMark />
               Continue with Google
               <span aria-hidden="true">→</span>

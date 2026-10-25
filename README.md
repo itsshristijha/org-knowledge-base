@@ -2,9 +2,8 @@
 
 Northstar is a private, source-grounded knowledge workspace. Sign in with
 Google, upload team records, ask questions in everyday language, and trace
-answers back to their source passages. The Vercel version is built with
-Next.js; Supabase provides Google-backed authentication, PostgreSQL, row-level
-security, and private document storage.
+answers back to their source passages. It runs on Next.js, Auth.js, and Neon
+Postgres; it does not use Supabase.
 
 ## Live links
 
@@ -12,90 +11,94 @@ security, and private document storage.
 - **GitHub repository:** [itsshristijha/org-knowledge-base](https://github.com/itsshristijha/org-knowledge-base)
 - **GitHub profile:** [github.com/itsshristijha](https://github.com/itsshristijha)
 
-The Vercel deployment is online. To activate Google sign-in, uploads, search,
-and persistent history, first configure the Supabase environment variables and
-Google provider using the steps below. Until configured, the deployment shows
-a setup page and keeps the workspace closed.
+The current Vercel deployment needs Google OAuth and Neon environment variables
+before sign-in and persistent storage can be activated.
 
-## What it does
+## Features
 
-- Google sign-in through Supabase Auth.
-- Private PDF, DOCX, TXT, Markdown, CSV, and JSON uploads (10 MB per file).
+- Google sign-in through Auth.js.
+- Private PDF, DOCX, TXT, Markdown, CSV, and JSON uploads (4 MB per file).
 - Source-linked answers with explicit abstention when retrieval finds no
   supporting passages.
 - Optional OpenAI-compatible answer generation; evidence-only excerpts work
   without an AI key.
-- Private question history and cautious similar-question reuse. A saved answer
+- Per-user question history and cautious similar-question reuse. A saved answer
   is reused only for a close match and the same indexed-document fingerprint.
 - Document library, dated evidence timeline, discrepancy review, and handover
   brief.
-- Supabase row-level security scopes documents, chunks, answers, and stored
-  files to the signed-in user.
+- Each server-side data query is parameterized and scoped to the authenticated
+  Google account. Uploaded file bytes, passages, and history are stored in
+  Neon, never in a public file bucket.
 
 The included demo set is fictional and intentionally contains an outdated
 database-choice statement to demonstrate a source discrepancy.
 
 ## Deploy to Vercel
 
-### 1. Create and configure Supabase
+### 1. Create a Neon database
 
-1. Create a Supabase project.
-2. In **SQL Editor**, run [`supabase/schema.sql`](./supabase/schema.sql). This
-   creates the tables, full-text search function, private Storage bucket, and
-   row-level security policies used by the app.
-3. In **Authentication → Providers → Google**, enable Google and add the
-   OAuth client ID and secret from Google Cloud Console.
-4. In Google Cloud Console, configure the OAuth web client redirect URI as
-   `https://<your-project-ref>.supabase.co/auth/v1/callback` (shown by
-   Supabase's Google provider setup).
-5. In **Authentication → URL Configuration**, set the Site URL to your Vercel
-   deployment and allow both
-   `https://<your-vercel-domain>/auth/callback` and
-   `http://localhost:3000/auth/callback`.
-6. Copy the Supabase project URL and publishable/anon key from **Project
-   Settings → API**. Do not use a service-role key in this app.
+Create a Postgres project at [Neon](https://neon.tech/) or connect one through
+the Vercel Marketplace. Copy its pooled connection string as `DATABASE_URL`.
+The application creates its tables and indexes on first use; the equivalent
+reviewable SQL is in [`database/schema.sql`](./database/schema.sql).
 
-### 2. Import the GitHub project into Vercel
+### 2. Configure Google OAuth
 
-1. Sign in at [Vercel](https://vercel.com/) and choose **Add New → Project**.
-2. Import [`itsshristijha/org-knowledge-base`](https://github.com/itsshristijha/org-knowledge-base).
-3. Keep the detected **Next.js** framework and root directory at `./`.
-   Vercel uses [`vercel.json`](./vercel.json) and the `npm run build` script.
-4. Add these environment variables in the project settings for **Production,
-   Preview, and Development**:
+1. Create an OAuth 2.0 **Web application** client in
+   [Google Cloud Console](https://console.cloud.google.com/apis/credentials).
+2. Add the authorized redirect URI
+   `https://org-knowledge-base-nine.vercel.app/api/auth/callback/google`.
+   For local development, also add
+   `http://localhost:3000/api/auth/callback/google`.
+3. Keep the client ID and secret private; add them to Vercel as
+   `AUTH_GOOGLE_ID` and `AUTH_GOOGLE_SECRET`.
 
-   | Variable | Required | Value |
-   | --- | --- | --- |
-   | `NEXT_PUBLIC_SUPABASE_URL` | Yes | Supabase project URL |
-   | `NEXT_PUBLIC_SUPABASE_ANON_KEY` | Yes | Supabase publishable/anon key |
-   | `OPENAI_API_KEY` | No | Optional model answer generation |
-   | `OPENAI_BASE_URL` | No | Defaults to `https://api.openai.com/v1` |
-   | `OPENAI_MODEL` | No | Defaults to `gpt-4o-mini` |
+### 3. Configure Vercel
 
-5. Deploy. Add the generated Vercel domain to the Supabase Auth Site URL and
-   redirect allowlist, then redeploy if you changed environment variables.
-6. Open the deployment URL and choose **Continue with Google**.
+In the Vercel project settings, add these environment variables for Production,
+Preview, and Development as appropriate:
 
-For local development, copy [`.env.example`](./.env.example) to `.env.local`,
-fill in the Supabase URL and publishable key, then run:
+| Variable | Required | Value |
+| --- | --- | --- |
+| `AUTH_GOOGLE_ID` | Yes | Google OAuth client ID |
+| `AUTH_GOOGLE_SECRET` | Yes | Google OAuth client secret |
+| `AUTH_SECRET` | Yes | Random secret used to sign Auth.js sessions |
+| `AUTH_URL` | Yes | `https://org-knowledge-base-nine.vercel.app` |
+| `DATABASE_URL` | Yes | Neon pooled Postgres connection string |
+| `OPENAI_API_KEY` | No | Optional model answer generation |
+| `OPENAI_BASE_URL` | No | Defaults to `https://api.openai.com/v1` |
+| `OPENAI_MODEL` | No | Defaults to `gpt-4o-mini` |
+
+Generate `AUTH_SECRET` with `openssl rand -base64 32`. Never commit credentials
+or put secrets in `NEXT_PUBLIC_*` variables. Redeploy after setting the
+variables, then use **Continue with Google**.
+
+### 4. Run locally
+
+Copy [`.env.example`](./.env.example) to `.env.local`, set the credentials and
+database connection, then run:
 
 ```bash
 npm install
 npm run dev
 ```
 
-The local app is at `http://localhost:3000`. Add that callback URL to the
-Supabase Auth redirect allowlist.
+The local app is at `http://localhost:3000`. Add its OAuth callback URI to the
+Google OAuth client.
 
 ## Data handling and privacy
 
-- Supabase is the system of record for user documents, searchable passages,
-  private uploaded files, and question history. The Vercel function filesystem
-  is not used for durable user data.
-- PostgreSQL row-level security is enabled by the provided schema. The app
-  authenticates each request and never uses a Supabase service-role key.
-- Similar-answer reuse is disabled when the visible document set changes.
-  Answers without supporting evidence are not used as cache hits.
+- Auth.js validates Google sign-in and stores sessions in signed JWT cookies.
+- Neon is the system of record for user documents, searchable passages, and
+  question history. The Vercel function filesystem is not used for durable
+  user data.
+- User IDs are derived from the authenticated Google account on the server;
+  API callers cannot choose an owner ID. Every read and mutation is scoped to
+  that owner, and SQL values are parameterized.
+- Uploaded source files are stored as private Postgres `bytea` data and are
+  never returned by an API or exposed through public URLs.
+- Similar-answer reuse is disabled when the user's visible document set
+  changes. Answers without supporting evidence are not cache hits.
 - When `OPENAI_API_KEY` is set, the question and selected source excerpts are
   sent to the configured model endpoint. Review your organization's data policy
   before enabling external generation for sensitive records.

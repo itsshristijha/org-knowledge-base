@@ -2,7 +2,7 @@ import { parse as parseCsv } from "csv-parse/sync";
 import mammoth from "mammoth";
 import { extractText, getDocumentProxy } from "unpdf";
 
-export const MAX_UPLOAD_BYTES = 10 * 1024 * 1024;
+export const MAX_UPLOAD_BYTES = 4 * 1024 * 1024;
 export const SUPPORTED_EXTENSIONS = new Set([".pdf", ".docx", ".txt", ".md", ".csv", ".json"]);
 
 export type ParsedSection = {
@@ -48,7 +48,7 @@ export async function parseDocument(filename: string, content: Buffer): Promise<
     throw new Error(`Unsupported file type: ${extension || "(no extension)"}`);
   }
   if (!content.length) throw new Error("The file is empty.");
-  if (content.length > MAX_UPLOAD_BYTES) throw new Error("File exceeds the 10 MB upload limit.");
+  if (content.length > MAX_UPLOAD_BYTES) throw new Error("File exceeds the 4 MB upload limit.");
 
   let sections: ParsedSection[];
   if (extension === ".pdf") {

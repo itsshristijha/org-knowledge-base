@@ -1,4 +1,6 @@
+import { randomUUID } from "node:crypto";
 import { getApiUser, jsonError } from "@/lib/api-user";
+import { ensureSchema } from "@/lib/database";
 import {
   ABSTENTION,
   corpusFingerprint,
@@ -38,6 +40,7 @@ type HistoryRow = {
 export async function POST(request: Request) {
   const auth = await getApiUser();
   if ("response" in auth) return auth.response;
+  await ensureSchema();
 
   let question: string;
   try {
@@ -51,23 +54,22 @@ export async function POST(request: Request) {
   const normalized = normalizeQuestion(question);
   if (normalized.split(" ").length < 2) return jsonError("Please enter a more specific question.");
 
-  const { data: documents, error: docsError } = await auth.supabase
-    .from("documents")
-    .select("content_hash")
-    .order("content_hash");
-  if (docsError) return jsonError(`Could not prepare your document library: ${docsError.message}`, 500);
-  const fingerprint = corpusFingerprint((documents ?? []).map((document) => document.content_hash));
-
-  const { data: recentHistory, error: historyError } = await auth.supabase
-    .from("answer_history")
-    .select("question, answer, citations, mode, notice, abstained, asked_at")
-    .eq("corpus_fingerprint", fingerprint)
-    .eq("abstained", false)
-    .order("asked_at", { ascending: false })
-    .limit(100);
-  if (historyError) return jsonError(`Could not check saved answers: ${historyError.message}`, 500);
-
-  const cacheMatch = ((recentHistory ?? []) as HistoryRow[])
+  const documents = await auth.sql`
+    select content_hash from public.documents
+    where owner_id = ${auth.userId}
+    order by content_hash
+  `;
+  const fingerprint = corpusFingerprint(documents.map((document) => String(document.content_hash)));
+  const recentHistory = await auth.sql`
+    select question, answer, citations, mode, notice, abstained, asked_at
+    from public.answer_history
+    where owner_id = ${auth.userId}
+      and corpus_fingerprint = ${fingerprint}
+      and abstained = false
+    order by asked_at desc
+    limit 100
+  ` as HistoryRow[];
+  const cacheMatch = recentHistory
     .map((item) => ({ item, similarity: questionSimilarity(question, item.question) }))
     .filter(({ similarity }) => similarity >= 0.88)
     .sort((left, right) => right.similarity - left.similarity)[0];
@@ -87,14 +89,26 @@ export async function POST(request: Request) {
       original_question: saved.question,
     };
   } else {
-    const { data, error } = await auth.supabase.rpc("search_chunks", {
-      search_query: question,
-      match_count: 6,
-    });
-    if (error) return jsonError(`Could not search your documents: ${error.message}`, 500);
-
-    const rows = ((data ?? []) as SearchRow[]).filter((row) => row.score > 0);
-    const citations: Citation[] = rows.map((row, index) => ({
+    const rows = await auth.sql`
+      select
+        c.id,
+        c.document_id,
+        d.filename,
+        d.source_type,
+        c.content,
+        c.page,
+        c.section,
+        c.author,
+        c.recorded_at,
+        ts_rank_cd(to_tsvector('english', c.content), websearch_to_tsquery('english', ${question})) as score
+      from public.chunks c
+      join public.documents d on d.id = c.document_id and d.owner_id = ${auth.userId}
+      where c.owner_id = ${auth.userId}
+        and to_tsvector('english', c.content) @@ websearch_to_tsquery('english', ${question})
+      order by score desc, c.id desc
+      limit 6
+    ` as SearchRow[];
+    const citations: Citation[] = rows.filter((row) => Number(row.score) > 0).map((row, index) => ({
       id: `S${index + 1}`,
       document_id: row.document_id,
       filename: row.filename,
@@ -104,7 +118,7 @@ export async function POST(request: Request) {
       author: row.author,
       timestamp: row.recorded_at,
       snippet: row.content,
-      score: row.score,
+      score: Number(row.score),
     }));
     if (!citations.length) {
       result = {
@@ -125,17 +139,15 @@ export async function POST(request: Request) {
     }
   }
 
-  const { error: saveError } = await auth.supabase.from("answer_history").insert({
-    owner_id: auth.user.id,
-    question,
-    normalized_question: normalized,
-    answer: result.answer,
-    citations: result.citations,
-    mode: result.mode,
-    notice: result.notice ?? null,
-    abstained: result.abstained,
-    corpus_fingerprint: fingerprint,
-  });
-  if (saveError) return jsonError(`Answer found but could not save it to your history: ${saveError.message}`, 500);
+  await auth.sql`
+    insert into public.answer_history (
+      id, owner_id, question, normalized_question, answer, citations, mode,
+      notice, abstained, corpus_fingerprint
+    ) values (
+      ${randomUUID()}, ${auth.userId}, ${question}, ${normalized}, ${result.answer},
+      ${JSON.stringify(result.citations)}::jsonb, ${result.mode}, ${result.notice ?? null},
+      ${result.abstained}, ${fingerprint}
+    )
+  `;
   return Response.json(result);
 }

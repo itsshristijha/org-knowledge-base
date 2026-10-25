@@ -35,7 +35,7 @@ test("CSV and JSON parsing retains labels and message metadata", async () => {
 test("unsupported, empty, oversized, and malformed documents fail explicitly", async () => {
   await assert.rejects(parseDocument("program.exe", Buffer.from("x")), /Unsupported file type/);
   await assert.rejects(parseDocument("empty.md", Buffer.alloc(0)), /empty/);
-  await assert.rejects(parseDocument("large.txt", Buffer.alloc(10 * 1024 * 1024 + 1)), /10 MB/);
+  await assert.rejects(parseDocument("large.txt", Buffer.alloc(4 * 1024 * 1024 + 1)), /4 MB/);
   await assert.rejects(parseDocument("broken.json", Buffer.from("{")), SyntaxError);
 });
 

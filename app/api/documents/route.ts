@@ -1,7 +1,9 @@
 import { createHash } from "node:crypto";
 import { NextResponse } from "next/server";
 import { getApiUser, jsonError } from "@/lib/api-user";
-import { MAX_UPLOAD_BYTES, parseDocument, splitText, SUPPORTED_EXTENSIONS } from "@/lib/document-parser";
+import { ensureSchema } from "@/lib/database";
+import { indexDocument } from "@/lib/index-document";
+import { MAX_UPLOAD_BYTES, parseDocument, SUPPORTED_EXTENSIONS } from "@/lib/document-parser";
 
 export const runtime = "nodejs";
 export const maxDuration = 60;
@@ -9,112 +11,72 @@ export const maxDuration = 60;
 export async function GET() {
   const auth = await getApiUser();
   if ("response" in auth) return auth.response;
-
-  const { data: documents, error } = await auth.supabase
-    .from("documents")
-    .select("id, filename, source_type, created_at, chunk_count")
-    .order("created_at", { ascending: false });
-  if (error) return jsonError(`Could not load documents: ${error.message}`, 500);
-
-  const { count, error: historyError } = await auth.supabase
-    .from("answer_history")
-    .select("id", { count: "exact", head: true });
-  if (historyError) return jsonError(`Could not load question count: ${historyError.message}`, 500);
-
+  await ensureSchema();
+  const documents = await auth.sql`
+    select id, filename, source_type, created_at, chunk_count
+    from (
+      select d.id, d.filename, d.source_type, d.created_at, count(c.id)::integer as chunk_count
+      from public.documents d
+      left join public.chunks c on c.document_id = d.id and c.owner_id = ${auth.userId}
+      where d.owner_id = ${auth.userId}
+      group by d.id
+    ) user_documents
+    order by created_at desc
+  `;
+  const totals = await auth.sql`
+    select count(*)::integer as questions
+    from public.answer_history where owner_id = ${auth.userId}
+  `;
   return NextResponse.json({
-    documents: documents ?? [],
-    chunks: (documents ?? []).reduce((total, document) => total + document.chunk_count, 0),
-    questions: count ?? 0,
+    documents,
+    chunks: documents.reduce((total, document) => total + Number(document.chunk_count), 0),
+    questions: Number(totals[0]?.questions ?? 0),
   });
 }
 
 export async function POST(request: Request) {
   const auth = await getApiUser();
   if ("response" in auth) return auth.response;
+  await ensureSchema();
 
-  let body: { filename?: string; storagePath?: string };
+  let form: FormData;
   try {
-    body = await request.json() as typeof body;
+    form = await request.formData();
   } catch {
     return jsonError("The upload request is invalid.");
   }
-  const filename = body.filename?.split(/[\\/]/).pop()?.trim();
-  const storagePath = body.storagePath;
-  if (!filename || !storagePath || !storagePath.startsWith(`${auth.user.id}/`)) {
-    return jsonError("The upload details are invalid.");
-  }
+  const file = form.get("file");
+  if (!(file instanceof File)) return jsonError("Choose a document to upload.");
+  const filename = file.name.split(/[\\/]/).pop()?.trim();
+  if (!filename) return jsonError("The filename is invalid.");
   const extension = filename.toLowerCase().match(/\.[^.]+$/)?.[0] ?? "";
   if (!SUPPORTED_EXTENSIONS.has(extension)) return jsonError("This file type is not supported.");
+  if (file.size > MAX_UPLOAD_BYTES) return jsonError("File exceeds the 4 MB upload limit.", 413);
 
-  const { data: storedFile, error: downloadError } = await auth.supabase.storage
-    .from("organization-documents")
-    .download(storagePath);
-  if (downloadError || !storedFile) return jsonError("Could not read the uploaded document.", 422);
-  if (storedFile.size > MAX_UPLOAD_BYTES) {
-    await auth.supabase.storage.from("organization-documents").remove([storagePath]);
-    return jsonError("File exceeds the 10 MB upload limit.", 413);
-  }
-
-  const content = Buffer.from(await storedFile.arrayBuffer());
+  const content = Buffer.from(await file.arrayBuffer());
   let sections;
   try {
     sections = await parseDocument(filename, content);
   } catch (error) {
-    await auth.supabase.storage.from("organization-documents").remove([storagePath]);
     return jsonError(error instanceof Error ? error.message : "Could not parse the document.", 422);
   }
-
   const contentHash = createHash("sha256").update(content).digest("hex");
-  const rows = sections.flatMap((section) =>
-    splitText(section.text).map((text) => ({
-      owner_id: auth.user.id,
-      content: text,
-      page: section.page ?? null,
-      section: section.section ?? null,
-      author: section.author ?? null,
-      recorded_at: section.recorded_at ?? null,
-    })),
-  );
-  const { data: existing, error: duplicateError } = await auth.supabase
-    .from("documents")
-    .select("id")
-    .eq("owner_id", auth.user.id)
-    .eq("content_hash", contentHash)
-    .maybeSingle();
-  if (duplicateError) return jsonError(`Could not check for duplicates: ${duplicateError.message}`, 500);
-  if (existing) {
-    const { error: cleanupError } = await auth.supabase.storage
-      .from("organization-documents")
-      .remove([storagePath]);
-    if (cleanupError) return jsonError(`This document already exists, but the duplicate upload could not be removed: ${cleanupError.message}`, 500);
-    return NextResponse.json({ status: "duplicate", document_id: existing.id, filename });
-  }
-
-  const { data: document, error: insertError } = await auth.supabase
-    .from("documents")
-    .insert({
-      owner_id: auth.user.id,
+  try {
+    const result = await indexDocument({
+      ownerId: auth.userId,
       filename,
-      source_type: extension.slice(1).toUpperCase(),
-      content_hash: contentHash,
-      storage_path: storagePath,
-      chunk_count: rows.length,
-    })
-    .select("id")
-    .single();
-  if (insertError || !document) {
-    await auth.supabase.storage.from("organization-documents").remove([storagePath]);
-    return jsonError(`Could not save the document: ${insertError?.message ?? "unknown error"}`, 500);
+      sourceType: extension.slice(1).toUpperCase(),
+      contentHash,
+      content,
+      sections,
+    });
+    return NextResponse.json({
+      status: result.status,
+      document_id: result.documentId,
+      filename,
+      chunks: result.chunks,
+    });
+  } catch (error) {
+    return jsonError(`Could not save the document: ${error instanceof Error ? error.message : "database error"}`, 500);
   }
-
-  const { error: chunksError } = await auth.supabase.from("chunks").insert(
-    rows.map((row) => ({ ...row, document_id: document.id })),
-  );
-  if (chunksError) {
-    await auth.supabase.from("documents").delete().eq("id", document.id);
-    await auth.supabase.storage.from("organization-documents").remove([storagePath]);
-    return jsonError(`Could not index the document: ${chunksError.message}`, 500);
-  }
-
-  return NextResponse.json({ status: "indexed", document_id: document.id, filename, chunks: rows.length });
 }

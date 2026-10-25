@@ -1,7 +1,6 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { createSupabaseBrowserClient } from "@/lib/supabase/browser";
 import { ABSTENTION, type Answer, type Citation } from "@/lib/knowledge";
 
 type DocumentItem = {
@@ -99,31 +98,16 @@ export function Workspace({ userEmail }: WorkspaceProps) {
     let indexed = 0;
     let duplicates = 0;
     try {
-      const supabase = createSupabaseBrowserClient();
-      const { data: { user }, error: userError } = await supabase.auth.getUser();
-      if (userError || !user) throw new Error("Please sign in again before uploading.");
-
       for (const file of uploadFiles) {
-        if (file.size > 10 * 1024 * 1024) throw new Error(`${file.name} exceeds the 10 MB limit.`);
-        const documentId = crypto.randomUUID();
-        const safeName = file.name.split(/[\\/]/).pop()!.replace(/[^a-zA-Z0-9._ -]/g, "_");
-        const storagePath = `${user.id}/${documentId}/${safeName}`;
-        const { error: uploadError } = await supabase.storage
-          .from("organization-documents")
-          .upload(storagePath, file, { upsert: false });
-        if (uploadError) throw new Error(`Could not upload ${file.name}: ${uploadError.message}`);
-        try {
-          const outcome = await readApiResponse<{ status: string }>(await fetch("/api/documents", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ filename: safeName, storagePath }),
-          }));
-          if (outcome.status === "duplicate") duplicates++;
-          else indexed++;
-        } catch (error) {
-          await supabase.storage.from("organization-documents").remove([storagePath]);
-          throw error;
-        }
+        if (file.size > 4 * 1024 * 1024) throw new Error(`${file.name} exceeds the 4 MB limit.`);
+        const form = new FormData();
+        form.set("file", file, file.name);
+        const outcome = await readApiResponse<{ status: string }>(await fetch("/api/documents", {
+          method: "POST",
+          body: form,
+        }));
+        if (outcome.status === "duplicate") duplicates++;
+        else indexed++;
       }
       setMessage(`${indexed} document${indexed === 1 ? "" : "s"} indexed${duplicates ? ` · ${duplicates} duplicate${duplicates === 1 ? "" : "s"} skipped` : ""}.`);
       setUploadFiles([]);
@@ -186,8 +170,12 @@ export function Workspace({ userEmail }: WorkspaceProps) {
   }
 
   async function signOut() {
-    const supabase = createSupabaseBrowserClient();
-    await supabase.auth.signOut();
+    const csrfPayload = await readApiResponse<{ csrfToken: string }>(await fetch("/api/auth/csrf"));
+    await fetch("/api/auth/signout", {
+      method: "POST",
+      headers: { "Content-Type": "application/x-www-form-urlencoded" },
+      body: new URLSearchParams({ csrfToken: csrfPayload.csrfToken }),
+    });
     window.location.assign("/");
   }
 
@@ -294,14 +282,14 @@ export function Workspace({ userEmail }: WorkspaceProps) {
             <div className="document-layout">
               <section className="panel upload-panel">
                 <div className="section-heading"><div><span className="panel-kicker">ADD TO YOUR PRIVATE LIBRARY</span><h2>Bring your team knowledge together.</h2></div><span className="upload-symbol">↥</span></div>
-                <p className="muted">Upload PDF, DOCX, text, Markdown, CSV, or JSON files. Each file can be up to 10 MB.</p>
+                <p className="muted">Upload PDF, DOCX, text, Markdown, CSV, or JSON files. Each file can be up to 4 MB.</p>
                 <label className="dropzone">
                   <input type="file" multiple accept=".pdf,.docx,.txt,.md,.csv,.json" onChange={(event) => setUploadFiles(Array.from(event.target.files ?? []))} />
                   <span className="dropzone-icon">＋</span><strong>Choose files to upload</strong><span>or drag and drop them here</span>
                 </label>
                 {uploadFiles.length > 0 && <div className="selected-files">{uploadFiles.map((file) => <span key={`${file.name}-${file.size}`}>▤ {file.name} <small>{formatBytes(file.size)}</small></span>)}</div>}
                 <div className="upload-actions"><button className="button button-primary" disabled={busy || uploadFiles.length === 0} onClick={() => void uploadSelectedFiles()}>{busy ? "Processing…" : `Index ${uploadFiles.length || ""} selected file${uploadFiles.length === 1 ? "" : "s"}`}</button><button className="button" disabled={busy} onClick={() => void loadDemo()}>Load fictional demo set</button></div>
-                <p className="fine-print">Documents are stored in your private Supabase bucket and protected by row-level security.</p>
+                <p className="fine-print">Documents and their searchable passages are stored privately in your Neon database.</p>
               </section>
               <section className="panel document-panel">
                 <div className="section-heading"><div><span className="panel-kicker">YOUR SOURCES</span><h2>Document library <span className="count-pill">{documents.length}</span></h2></div><button className="icon-button" aria-label="Refresh documents" onClick={() => void refresh()}>↻</button></div>

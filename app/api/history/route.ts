@@ -1,21 +1,24 @@
 import { getApiUser, jsonError } from "@/lib/api-user";
+import { ensureSchema } from "@/lib/database";
 
 export async function GET() {
   const auth = await getApiUser();
   if ("response" in auth) return auth.response;
-  const { data, error } = await auth.supabase
-    .from("answer_history")
-    .select("id, question, answer, citations, mode, notice, abstained, asked_at")
-    .order("asked_at", { ascending: false })
-    .limit(50);
-  if (error) return jsonError(`Could not load question history: ${error.message}`, 500);
-  return Response.json({ history: data ?? [] });
+  await ensureSchema();
+  const history = await auth.sql`
+    select id, question, answer, citations, mode, notice, abstained, asked_at
+    from public.answer_history
+    where owner_id = ${auth.userId}
+    order by asked_at desc
+    limit 50
+  `;
+  return Response.json({ history });
 }
 
 export async function DELETE() {
   const auth = await getApiUser();
   if ("response" in auth) return auth.response;
-  const { error } = await auth.supabase.from("answer_history").delete().eq("owner_id", auth.user.id);
-  if (error) return jsonError(`Could not clear question history: ${error.message}`, 500);
+  await ensureSchema();
+  await auth.sql`delete from public.answer_history where owner_id = ${auth.userId}`;
   return Response.json({ cleared: true });
 }
