@@ -173,12 +173,15 @@ export function Workspace({ userEmail }: WorkspaceProps) {
     setErrorMessage("");
     try {
       const csrfPayload = await readApiResponse<{ csrfToken: string }>(await fetch("/api/auth/csrf"));
-      await readApiResponse<{ url: string }>(await fetch("/api/auth/signout", {
+      const result = await readApiResponse<{ url: string }>(await fetch("/api/auth/signout", {
         method: "POST",
-        headers: { "Content-Type": "application/x-www-form-urlencoded" },
-        body: new URLSearchParams({ csrfToken: csrfPayload.csrfToken }),
+        headers: {
+          "Content-Type": "application/x-www-form-urlencoded",
+          "X-Auth-Return-Redirect": "1",
+        },
+        body: new URLSearchParams({ csrfToken: csrfPayload.csrfToken, callbackUrl: "/" }),
       }));
-      window.location.assign("/");
+      window.location.assign(result.url);
     } catch (error) {
       setErrorMessage(error instanceof Error ? error.message : "Could not sign out. Please try again.");
     }
