@@ -6,6 +6,17 @@ answers back to their source passages. The Vercel version is built with
 Next.js; Supabase provides Google-backed authentication, PostgreSQL, row-level
 security, and private document storage.
 
+## Live links
+
+- **Vercel deployment:** [org-knowledge-base-nine.vercel.app](https://org-knowledge-base-nine.vercel.app/)
+- **GitHub repository:** [itsshristijha/org-knowledge-base](https://github.com/itsshristijha/org-knowledge-base)
+- **GitHub profile:** [github.com/itsshristijha](https://github.com/itsshristijha)
+
+The Vercel deployment is online. To activate Google sign-in, uploads, search,
+and persistent history, first configure the Supabase environment variables and
+Google provider using the steps below. Until configured, the deployment shows
+a setup page and keeps the workspace closed.
+
 ## What it does
 
 - Google sign-in through Supabase Auth.
