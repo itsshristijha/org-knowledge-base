@@ -193,6 +193,7 @@ a { color: inherit; text-decoration: none; }
 .profile-copy span { overflow: hidden; color: #8a938b; font-size: 9px; text-overflow: ellipsis; }
 .icon-button { width: 31px; height: 31px; display: grid; place-items: center; border: 0; border-radius: 8px; color: #77827a; background: transparent; cursor: pointer; font-size: 16px; }
 .icon-button:hover { color: #285c48; background: #edf3ed; }
+.signout-button { width: auto; display: flex; align-items: center; gap: 6px; padding: 0 8px; font-size: 11px; white-space: nowrap; }
 .workspace-main { min-width: 0; }
 .topbar { height: 62px; display: flex; align-items: center; justify-content: space-between; padding: 0 42px; border-bottom: 1px solid #e8ece6; background: rgba(255, 255, 255, .63); }
 .breadcrumb { display: flex; align-items: center; gap: 10px; color: #89928b; font-size: 11px; }
@@ -346,7 +347,9 @@ a { color: inherit; text-decoration: none; }
   .app-shell { display: block; }
   .sidebar { position: static; width: 100%; height: auto; padding: 12px 14px 9px; border-right: 0; border-bottom: 1px solid #e7ebe5; }
   .sidebar .brand-lockup { padding: 0 3px; }
-  .sidebar-label, .sidebar-library, .profile, .sidebar-spacer { display: none; }
+  .sidebar-label, .sidebar-library, .sidebar-spacer { display: none; }
+  .profile { padding: 9px 3px 2px; margin-top: 9px; }
+  .profile-copy span { display: none; }
   .side-nav { display: flex; overflow-x: auto; gap: 4px; margin-top: 12px; }
   .nav-item { flex: none; min-height: 34px; padding: 0 9px; font-size: 10px; white-space: nowrap; }
   .nav-item > span { width: auto; font-size: 14px; }
